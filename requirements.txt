@@ -1,0 +1,8 @@
+requests
+curl_cffi
+pymupdf
+beautifulsoup4
+schedule
+streamlit
+pandas
+python-dotenv   
