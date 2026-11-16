@@ -1,7 +1,7 @@
-import os
-
 import requests
 from dotenv import load_dotenv
+
+from config import get_config
 
 load_dotenv()
 
@@ -21,8 +21,8 @@ def _dividir_mensagem(texto: str, limite: int = 4000) -> list[str]:
 
 def enviar_telegram(mensagem: str) -> bool:
     """Envia mensagem via Telegram Bot. Retorna True se o envio funcionou."""
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    token = get_config("TELEGRAM_BOT_TOKEN")
+    chat_id = get_config("TELEGRAM_CHAT_ID")
     if not token or not chat_id or not mensagem.strip():
         return False
 

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 BASE_URL = "https://iose.se.gov.br/prefeitura-sao-cristovao"
@@ -10,7 +11,22 @@ RESUMOS_DIR = OUT_DIR / "resumos"
 
 DB_PATH = OUT_DIR / "atos.db"
 
-for d in (EDICOES_DIR, ATOS_DIR, RESUMOS_DIR):
-    d.mkdir(parents=True, exist_ok=True) 
 
+def get_config(chave: str, padrao: str = "") -> str:
+    """Busca configuração nas variáveis de ambiente ou no st.secrets (Streamlit Cloud)."""
+    valor = os.getenv(chave)
+    if valor:
+        return valor
+    try:
+        import streamlit as st
+
+        if chave in st.secrets:
+            return str(st.secrets[chave])
+    except Exception:
+        pass
+    return padrao
+
+
+for d in (EDICOES_DIR, ATOS_DIR, RESUMOS_DIR):
+    d.mkdir(parents=True, exist_ok=True)
 

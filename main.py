@@ -9,17 +9,37 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
+import config
+import processor
+import processor.extractor as _extractor
+import processor.summarizer as _summarizer
 import utils
 import utils.db as _db
 
+if not hasattr(config, "get_config"):
+    importlib.reload(config)
 if not hasattr(_db, "carregar_atos_edicao"):
     importlib.reload(_db)
-    importlib.reload(utils)
+importlib.reload(_extractor)
+importlib.reload(_summarizer)
+importlib.reload(processor)
+importlib.reload(utils)
 
-from config import BASE_URL
+from config import BASE_URL, get_config
 from processor import extrair_atos, gerar_resumo
 from processor.extractor import Ato
 from scraper import baixar_edicao, extrair_texto_pdf, obter_edicao_do_dia
+from utils.auth import (
+    alterar_senha,
+    autenticar_usuario,
+    criar_sessao_persistente,
+    criar_usuario,
+    encerrar_sessao_persistente,
+    garantir_admin_inicial,
+    listar_usuarios,
+    remover_usuario,
+    validar_sessao_persistente,
+)
 from utils.db import (
     carregar_atos,
     carregar_atos_edicao,
@@ -134,7 +154,12 @@ def _badges_ato(ato: Ato) -> str:
     }.get(ato.tipo, "gray")
     cor_cargo = "orange" if ato.tipo == "exoneração" else "blue"
 
-    badges = [f":{cor_decreto}-badge[Decreto {_md(ato.decreto)}]"]
+    rotulo_doc = (
+        _md(ato.decreto)
+        if str(ato.decreto).lower().startswith("portaria")
+        else f"Decreto {_md(ato.decreto)}"
+    )
+    badges = [f":{cor_decreto}-badge[{rotulo_doc}]"]
     if ato.cargo:
         badges.append(f":{cor_cargo}-badge[{_md(ato.cargo)}]")
     return " ".join(badges)
@@ -354,7 +379,7 @@ def _render_resumo(atos: list[Ato], edicao: dict) -> None:
     resumo = gerar_resumo(atos)
     base = _slug(edicao.get("titulo", "diario-oficial")) or "diario-oficial"
     telegram_configurado = bool(
-        os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID")
+        get_config("TELEGRAM_BOT_TOKEN") and get_config("TELEGRAM_CHAT_ID")
     )
 
     with st.container(horizontal=True, vertical_alignment="center"):
@@ -658,6 +683,179 @@ def processar_diario(dia: date) -> None:
     )
 
 
+def _render_login() -> None:
+    garantir_admin_inicial()
+    st.space("medium")
+    _, col_centro, _ = st.columns([1.2, 1.6, 1.2])
+    with col_centro:
+        with st.container(border=True):
+            st.subheader(
+                "Diário Oficial · São Cristóvão/SE",
+                icon=":material/newspaper:",
+            )
+            st.caption(
+                "Entre com suas credenciais para acessar o painel de monitoramento de atos."
+            )
+            with st.form("form_login", border=False):
+                username = st.text_input(
+                    "Usuário",
+                    placeholder="Ex.: admin",
+                    icon=":material/person:",
+                )
+                senha = st.text_input(
+                    "Senha",
+                    type="password",
+                    placeholder="Digite sua senha",
+                    icon=":material/lock:",
+                )
+                manter_conectado = st.checkbox(
+                    "Manter conectado neste dispositivo (30 dias)",
+                    value=True,
+                )
+                entrar = st.form_submit_button(
+                    "Entrar no sistema",
+                    type="primary",
+                    icon=":material/login:",
+                    width="stretch",
+                )
+            if entrar:
+                usuario = autenticar_usuario(username, senha)
+                if usuario:
+                    st.session_state["usuario_logado"] = usuario
+                    if manter_conectado:
+                        token = criar_sessao_persistente(usuario["id"])
+                        st.session_state["token_sessao"] = token
+                        st.query_params["sessao"] = token
+                    st.rerun()
+                else:
+                    st.error(
+                        "Usuário ou senha inválidos.",
+                        icon=":material/error:",
+                    )
+
+
+@st.fragment
+def _render_usuarios(usuario_atual: dict) -> None:
+    col_lista, col_acoes = st.columns([1.6, 1.1], gap="medium")
+
+    with col_lista:
+        with st.container(border=True):
+            st.subheader(
+                "Usuários cadastrados",
+                icon=":material/group:",
+            )
+            st.caption(
+                "Contas com permissão de acesso ao sistema de monitoramento."
+            )
+            usuarios = listar_usuarios()
+            df_usr = pd.DataFrame(usuarios)
+            if not df_usr.empty:
+                df_usr["papel"] = df_usr["papel"].map(
+                    {"admin": "Administrador", "usuario": "Usuário"}
+                )
+                st.dataframe(
+                    df_usr[["nome", "username", "papel", "criado_em"]],
+                    column_config={
+                        "nome": st.column_config.TextColumn("Nome", width="medium"),
+                        "username": st.column_config.TextColumn("Usuário", width="small"),
+                        "papel": st.column_config.TextColumn("Perfil", width="small"),
+                        "criado_em": st.column_config.TextColumn("Criado em", width="small"),
+                    },
+                    hide_index=True,
+                    width="stretch",
+                )
+
+            outros_usuarios = [
+                u["username"]
+                for u in usuarios
+                if u["username"] != usuario_atual["username"]
+            ]
+            if outros_usuarios:
+                with st.expander("Remover ou redefinir senha de usuário", icon=":material/manage_accounts:"):
+                    alvo = st.selectbox(
+                        "Selecione o usuário",
+                        outros_usuarios,
+                        key="adm_alvo_user",
+                    )
+                    nova_senha_adm = st.text_input(
+                        "Nova senha (para redefinir)",
+                        type="password",
+                        placeholder="Mínimo de 6 caracteres",
+                        key="adm_nova_senha",
+                    )
+                    col_reset, col_del = st.columns(2, gap="small")
+                    if col_reset.button(
+                        "Redefinir senha",
+                        icon=":material/key:",
+                        width="stretch",
+                        key="btn_adm_reset",
+                    ):
+                        ok, msg = alterar_senha(alvo, nova_senha_adm)
+                        if ok:
+                            st.success(msg, icon=":material/check_circle:")
+                        else:
+                            st.error(msg, icon=":material/error:")
+                    if col_del.button(
+                        "Excluir usuário",
+                        icon=":material/delete:",
+                        type="secondary",
+                        width="stretch",
+                        key="btn_adm_del",
+                    ):
+                        ok, msg = remover_usuario(alvo, usuario_atual["username"])
+                        if ok:
+                            st.toast(msg, icon=":material/check_circle:")
+                            st.rerun()
+                        else:
+                            st.error(msg, icon=":material/error:")
+
+    with col_acoes:
+        with st.container(border=True):
+            st.subheader(
+                "Novo usuário",
+                icon=":material/person_add:",
+            )
+            st.caption("Cadastre um novo membro da equipe.")
+            with st.form("form_criar_usuario", border=False, clear_on_submit=True):
+                novo_nome = st.text_input("Nome completo", placeholder="Ex.: Maria Santos")
+                novo_user = st.text_input("Nome de usuário (login)", placeholder="Ex.: maria.santos")
+                nova_senha = st.text_input("Senha inicial", type="password", placeholder="Mínimo de 6 caracteres")
+                novo_papel = st.selectbox(
+                    "Perfil de acesso",
+                    options=["usuario", "admin"],
+                    format_func=lambda p: "Administrador (gerencia usuários)" if p == "admin" else "Usuário padrão (consulta e exporta)",
+                )
+                cadastrar = st.form_submit_button(
+                    "Criar usuário",
+                    type="primary",
+                    icon=":material/person_add:",
+                    width="stretch",
+                )
+            if cadastrar:
+                ok, msg = criar_usuario(novo_user, novo_nome, nova_senha, novo_papel)
+                if ok:
+                    st.toast(msg, icon=":material/check_circle:")
+                    st.rerun()
+                else:
+                    st.error(msg, icon=":material/error:")
+
+
+usuario_logado = st.session_state.get("usuario_logado")
+if not usuario_logado:
+    token_url = st.query_params.get("sessao")
+    if token_url:
+        usuario_recuperado = validar_sessao_persistente(token_url)
+        if usuario_recuperado:
+            usuario_logado = usuario_recuperado
+            st.session_state["usuario_logado"] = usuario_recuperado
+            st.session_state["token_sessao"] = token_url
+        else:
+            st.query_params.pop("sessao", None)
+
+if not usuario_logado:
+    _render_login()
+    st.stop()
+
 hoje = date.today()
 chave_hoje = hoje.isoformat()
 
@@ -675,6 +873,43 @@ opcoes_hist = listar_opcoes_historico()
 edicoes_salvas = opcoes_hist["edicoes"]
 
 with st.sidebar:
+    with st.container(border=True):
+        st.markdown(
+            f":material/account_circle: **{_md(usuario_logado['nome'])}**  \n"
+            f"`@{_md(usuario_logado['username'])}` · "
+            f"{'Administrador' if usuario_logado.get('papel') == 'admin' else 'Usuário'}"
+        )
+        with st.popover("Alterar minha senha", icon=":material/lock_reset:", width="stretch"):
+            with st.form("form_minha_senha", border=False, clear_on_submit=True):
+                senha_atual_in = st.text_input("Senha atual", type="password")
+                senha_nova_in = st.text_input("Nova senha", type="password")
+                salvar_senha = st.form_submit_button(
+                    "Atualizar senha",
+                    type="primary",
+                    width="stretch",
+                )
+            if salvar_senha:
+                ok, msg = alterar_senha(
+                    usuario_logado["username"],
+                    senha_nova_in,
+                    senha_atual=senha_atual_in,
+                )
+                if ok:
+                    st.success(msg, icon=":material/check_circle:")
+                else:
+                    st.error(msg, icon=":material/error:")
+        if st.button(
+            "Sair da conta",
+            icon=":material/logout:",
+            width="stretch",
+            key="btn_logout",
+        ):
+            token_atual = st.session_state.pop("token_sessao", None) or st.query_params.get("sessao")
+            encerrar_sessao_persistente(token_atual)
+            st.query_params.pop("sessao", None)
+            st.session_state.pop("usuario_logado", None)
+            st.rerun()
+
     st.header("Consultar edição", icon=":material/search:")
     st.caption(f"Data de referência: {hoje:%d/%m/%Y}")
 
@@ -815,23 +1050,29 @@ if atos:
     _render_metricas(atos)
 
 st.space("small")
-tab_resumo, tab_orgaos, tab_tabela, tab_historico = st.tabs(
-    [
-        ":material/article: Resumo",
-        ":material/analytics: Por órgão",
-        ":material/table_chart: Tabela",
-        ":material/history: Histórico",
-    ]
-)
+abas_titulos = [
+    ":material/article: Resumo",
+    ":material/analytics: Por órgão",
+    ":material/table_chart: Tabela",
+    ":material/history: Histórico",
+]
+if usuario_logado.get("papel") == "admin":
+    abas_titulos.append(":material/manage_accounts: Usuários")
 
-with tab_resumo:
+abas = st.tabs(abas_titulos)
+
+with abas[0]:
     _render_resumo(atos, edicao_atual or {})
 
-with tab_orgaos:
+with abas[1]:
     _render_orgaos(atos)
 
-with tab_tabela:
+with abas[2]:
     _render_tabela(atos, edicao_atual or {})
 
-with tab_historico:
+with abas[3]:
     _render_historico()
+
+if usuario_logado.get("papel") == "admin" and len(abas) > 4:
+    with abas[4]:
+        _render_usuarios(usuario_logado)

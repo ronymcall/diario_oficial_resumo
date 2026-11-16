@@ -59,10 +59,12 @@ def _like_pattern(texto: str) -> str:
 
 def salvar_atos(atos: list[Ato], edicao: str = "") -> None:
     conn = _get_conn()
+    if edicao:
+        conn.execute("DELETE FROM atos WHERE edicao = ?", (edicao,))
     for a in atos:
         conn.execute(
             """
-            INSERT OR IGNORE INTO atos
+            INSERT OR REPLACE INTO atos
                 (decreto, tipo, nome, cargo, orgao, data, edicao)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,

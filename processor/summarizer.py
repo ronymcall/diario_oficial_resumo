@@ -35,6 +35,11 @@ def gerar_resumo(atos: list[Ato]) -> str:
     if outros:
         linhas.append(f"\n## Outros atos ({len(outros)})")
         for a in outros:
-            linhas.append(f"- Decreto {a.decreto} — {a.nome}")
+            linha = f"- **{a.nome}** — {a.decreto}"
+            if a.cargo:
+                linha += f" — Cargo: {a.cargo}"
+            if a.orgao:
+                linha += f" — Órgão: {a.orgao}"
+            linhas.append(linha)
 
     return "\n".join(linhas)   
