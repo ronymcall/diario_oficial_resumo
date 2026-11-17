@@ -21,6 +21,10 @@ def _get_conn() -> sqlite3.Connection:
     colunas = {row[1] for row in conn.execute("PRAGMA table_info(atos)")}
     if "orgao" not in colunas:
         conn.execute("ALTER TABLE atos ADD COLUMN orgao TEXT")
+    if "detalhes" not in colunas:
+        conn.execute("ALTER TABLE atos ADD COLUMN detalhes TEXT")
+    if "texto_original" not in colunas:
+        conn.execute("ALTER TABLE atos ADD COLUMN texto_original TEXT")
 
     indices = {row[1] for row in conn.execute("PRAGMA index_list(atos)")}
     if "idx_atos_unico" in indices:
@@ -65,10 +69,20 @@ def salvar_atos(atos: list[Ato], edicao: str = "") -> None:
         conn.execute(
             """
             INSERT OR REPLACE INTO atos
-                (decreto, tipo, nome, cargo, orgao, data, edicao)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (decreto, tipo, nome, cargo, orgao, data, detalhes, texto_original, edicao)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (a.decreto, a.tipo, a.nome, a.cargo, a.orgao, a.data, edicao),
+            (
+                a.decreto,
+                a.tipo,
+                a.nome,
+                a.cargo,
+                a.orgao,
+                a.data,
+                a.detalhes,
+                a.texto_original,
+                edicao,
+            ),
         )
     conn.commit()
     conn.close()
@@ -81,7 +95,7 @@ def carregar_atos(
     edicao: str | None = None,
 ) -> list[dict]:
     conn = _get_conn()
-    query = "SELECT decreto, tipo, nome, cargo, orgao, data, edicao FROM atos WHERE 1=1"
+    query = "SELECT decreto, tipo, nome, cargo, orgao, data, detalhes, texto_original, edicao FROM atos WHERE 1=1"
     params: list[str] = []
     if tipo:
         query += " AND tipo = ?"
@@ -98,9 +112,10 @@ def carregar_atos(
             " AND (nome LIKE ? ESCAPE '!'"
             " OR IFNULL(cargo, '') LIKE ? ESCAPE '!'"
             " OR IFNULL(orgao, '') LIKE ? ESCAPE '!'"
+            " OR IFNULL(detalhes, '') LIKE ? ESCAPE '!'"
             " OR IFNULL(decreto, '') LIKE ? ESCAPE '!')"
         )
-        params.extend([padrao, padrao, padrao, padrao])
+        params.extend([padrao, padrao, padrao, padrao, padrao])
     query += " ORDER BY id DESC"
 
     rows = conn.execute(query, params).fetchall()
@@ -114,7 +129,9 @@ def carregar_atos(
             "cargo": r[3],
             "orgao": r[4],
             "data": r[5],
-            "edicao": r[6],
+            "detalhes": r[6],
+            "texto_original": r[7],
+            "edicao": r[8],
         }
         for r in rows
     ]
@@ -161,6 +178,8 @@ def carregar_atos_edicao(edicao: str) -> list[Ato]:
             cargo=r["cargo"],
             orgao=r["orgao"],
             data=r["data"],
+            detalhes=r.get("detalhes"),
+            texto_original=r.get("texto_original"),
         )
         for r in reversed(registros)
     ]

@@ -69,10 +69,11 @@ ROTULOS_COLUNAS = {
     "decreto": "Decreto",
     "cargo": "Cargo",
     "orgao": "Órgão",
+    "detalhes": "Descrição / Ementa",
     "data": "Data do ato",
     "edicao": "Edição",
 }
-COLUNAS_ATOS = ["nome", "tipo", "decreto", "cargo", "orgao", "data"]
+COLUNAS_ATOS = ["nome", "tipo", "decreto", "cargo", "orgao", "detalhes", "data"]
 COLUNAS_HISTORICO = [*COLUNAS_ATOS, "edicao"]
 
 
@@ -102,6 +103,7 @@ def _config_colunas(incluir_edicao: bool = False) -> dict:
         "decreto": st.column_config.TextColumn("Decreto", width="small"),
         "cargo": st.column_config.TextColumn("Cargo", width="medium"),
         "orgao": st.column_config.TextColumn("Órgão", width="medium"),
+        "detalhes": st.column_config.TextColumn("Descrição / Ementa", width="large"),
         "data": st.column_config.TextColumn("Data do ato", width="small"),
     }
     if incluir_edicao:
@@ -165,9 +167,11 @@ def _badges_ato(ato: Ato) -> str:
     return " ".join(badges)
 
 
-def _card_ato(ato: Ato) -> None:
+def _card_ato(ato: Ato, mostrar_detalhes: bool = False) -> None:
     with st.container(border=True, gap="xxsmall"):
         st.markdown(f"**{_md(ato.nome)}**\n\n{_badges_ato(ato)}")
+        if mostrar_detalhes and getattr(ato, "detalhes", None):
+            st.caption(_md(ato.detalhes))
         rodape = []
         if ato.orgao:
             rodape.append(f":material/account_balance: {_md(ato.orgao)}")
@@ -175,6 +179,15 @@ def _card_ato(ato: Ato) -> None:
             rodape.append(f":material/event: {_md(ato.data)}")
         if rodape:
             st.caption(" · ".join(rodape))
+        if getattr(ato, "texto_original", None) or (
+            not mostrar_detalhes and getattr(ato, "detalhes", None)
+        ):
+            with st.popover("Ver detalhes do ato", icon=":material/subject:"):
+                if getattr(ato, "detalhes", None):
+                    st.markdown(f"**Resumo / Ementa:** {_md(ato.detalhes)}")
+                if getattr(ato, "texto_original", None):
+                    st.caption("Trecho extraído do Diário Oficial:")
+                    st.code(ato.texto_original, language="text")
 
 
 def _lista_resumo(atos: list[Ato], vazio: str) -> None:
@@ -299,6 +312,7 @@ def _filtrar_atos_edicao(
             if t in (a.nome or "").lower()
             or t in (a.cargo or "").lower()
             or t in (a.orgao or "").lower()
+            or t in (getattr(a, "detalhes", None) or "").lower()
             or t in (a.decreto or "").lower()
         ]
     return filtrados
@@ -367,13 +381,9 @@ def _render_resumo(atos: list[Ato], edicao: dict) -> None:
         _lista_resumo(exoneracoes, "Nenhuma exoneração para os filtros aplicados.")
 
     if outros:
-        st.space("small")
-        with st.expander(
-            f"Outros atos · {len(outros)}",
-            icon=":material/description:",
-        ):
-            for ato in outros:
-                _card_ato(ato)
+        st.caption(
+            f":material/info: Há também **{len(outros)} outro(s) ato(s)** de pessoal nesta edição (licenças, lotações, gratificações, vacâncias). Confira na aba **Outros atos e detalhes**."
+        )
 
     st.space("small")
     resumo = gerar_resumo(atos)
@@ -420,6 +430,60 @@ def _render_resumo(atos: list[Ato], edicao: dict) -> None:
             "Telegram não configurado. Defina `TELEGRAM_BOT_TOKEN` e "
             "`TELEGRAM_CHAT_ID` no arquivo `.env`."
         )
+
+
+@st.fragment
+def _render_outros_e_detalhes(atos: list[Ato]) -> None:
+    if not atos:
+        st.info(
+            "Carregue uma edição para consultar outros atos de pessoal e as descrições completas.",
+            icon=":material/assignment:",
+            title="Nenhum ato carregado",
+        )
+        return
+
+    outros = [a for a in atos if a.tipo == "outro"]
+    sub_visao = st.segmented_control(
+        "Filtro de visualização",
+        options=[
+            f"Outros atos de pessoal ({len(outros)})",
+            f"Todos os atos com descrição ({len(atos)})",
+        ],
+        default=f"Outros atos de pessoal ({len(outros)})" if outros else f"Todos os atos com descrição ({len(atos)})",
+        label_visibility="collapsed",
+        key="seg_outros_detalhes",
+    )
+
+    lista_base = (
+        outros
+        if sub_visao and sub_visao.startswith("Outros atos")
+        else atos
+    )
+
+    busca_det = st.text_input(
+        "Filtrar atos nos detalhes",
+        type="search",
+        live=True,
+        placeholder="Filtrar por servidor, cargo, órgão, portaria/decreto ou palavras da descrição…",
+        label_visibility="collapsed",
+        key="busca_aba_detalhes",
+    )
+    lista_filtrada = _filtrar_atos_edicao(
+        lista_base, (busca_det or "").strip(), None
+    )
+
+    if not lista_filtrada:
+        st.info(
+            "Nenhum ato encontrado para o filtro selecionado.",
+            icon=":material/search_off:",
+        )
+        return
+
+    st.caption(
+        f"Exibindo {len(lista_filtrada)} ato(s). Clique em **Ver detalhes do ato** para abrir o texto original do Diário Oficial."
+    )
+    for ato in lista_filtrada:
+        _card_ato(ato, mostrar_detalhes=True)
 
 
 def _render_orgaos(atos: list[Ato]) -> None:
@@ -1052,6 +1116,7 @@ if atos:
 st.space("small")
 abas_titulos = [
     ":material/article: Resumo",
+    f":material/assignment: Outros atos e detalhes ({sum(1 for a in atos if a.tipo == 'outro')})",
     ":material/analytics: Por órgão",
     ":material/table_chart: Tabela",
     ":material/history: Histórico",
@@ -1065,14 +1130,17 @@ with abas[0]:
     _render_resumo(atos, edicao_atual or {})
 
 with abas[1]:
-    _render_orgaos(atos)
+    _render_outros_e_detalhes(atos)
 
 with abas[2]:
-    _render_tabela(atos, edicao_atual or {})
+    _render_orgaos(atos)
 
 with abas[3]:
+    _render_tabela(atos, edicao_atual or {})
+
+with abas[4]:
     _render_historico()
 
-if usuario_logado.get("papel") == "admin" and len(abas) > 4:
-    with abas[4]:
+if usuario_logado.get("papel") == "admin" and len(abas) > 5:
+    with abas[5]:
         _render_usuarios(usuario_logado)

@@ -40,6 +40,8 @@ def gerar_resumo(atos: list[Ato]) -> str:
                 linha += f" — Cargo: {a.cargo}"
             if a.orgao:
                 linha += f" — Órgão: {a.orgao}"
+            if getattr(a, "detalhes", None):
+                linha += f" ({a.detalhes})"
             linhas.append(linha)
 
     return "\n".join(linhas)   

@@ -11,6 +11,8 @@ class Ato:
     cargo: Optional[str] = None
     orgao: Optional[str] = None
     data: Optional[str] = None
+    detalhes: Optional[str] = None
+    texto_original: Optional[str] = None
 
 
 _MESES = (
@@ -107,7 +109,13 @@ def _limpar_nome(nome: Optional[str]) -> Optional[str]:
         return None
     s = re.sub(r"\s+", " ", nome).strip(" ,.;:-")
     s = re.sub(
-        r"^(?:(?:DESIGNAR|LOTAR|REMOVER|REINTEGRAR|NOMEAR|EXONERAR)\s+)?(?:o\s+servidor|a\s+servidora|ao\s+servidor|à\s+servidora|servidor(?:a)?|Sr\.?[ºªo°]*|Sra\.?[ªa°]*)\s+",
+        r"^(?:(?:DESIGNAR|LOTAR|REMOVER|REINTEGRAR|NOMEAR|EXONERAR)\s+)?(?:o\s+servidor(?:\s+efetivo)?|a\s+servidora(?:\s+efetiva)?|ao\s+servidor(?:\s+efetivo)?|à\s+servidora(?:\s+efetiva)?|servidor(?:a)?(?:\s+efetiv[oa])?|Sr\.?[ºªo°]*|Sra\.?[ªa°]*)\s+",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"\s*,?\s*(?:servidor(?:a)?\s+(?:de\s+cargo\s+efetivo|efetiv[oa]|p[úu]blic[oa])|ocupante\s+d[eo]\s+cargo.*|inscrit[oa]\s+no\s+CPF.*)$",
         "",
         s,
         flags=re.IGNORECASE,
@@ -120,6 +128,58 @@ def _limpar_nome(nome: Optional[str]) -> Optional[str]:
     if re.fullmatch(r"(?:[A-Z]\.?\s*){2,5}", s):
         return None
     return s
+
+
+def _extrair_orgao_assinatura(bloco: str) -> Optional[str]:
+    """Extrai o órgão da autoridade co-signatária ou do preâmbulo quando não explícito no Art. 1º."""
+    m_pre = re.search(
+        r"juntamente\s+com\s+[oa]\s+SECRET[ÁA]RI[OA]\s+MUNICIPAL\s+(?:DE|DA|DO)\s+([A-ZÀ-Ú\s]+?)(?:,|\s+no\s+uso)",
+        bloco,
+        re.IGNORECASE,
+    )
+    if m_pre:
+        nome_sec = re.sub(r"\s+", " ", m_pre.group(1)).strip()
+        return _limpar_orgao(f"Secretaria Municipal de {nome_sec.title()}")
+
+    # Procura nas linhas finais a assinatura de Secretário(a) específico (exceto Governo e Gestão quando há outro)
+    matches = re.findall(
+        r"Secret[áa]ri[oa]\s+Municipal\s+(?:de|da|do)\s+([^\n]+)",
+        bloco,
+        re.IGNORECASE,
+    )
+    for m in reversed(matches):
+        cand = _limpar_orgao(f"Secretaria Municipal de {m}")
+        if cand and "governo" not in cand.lower():
+            return cand
+    return None
+
+
+def _extrair_ementa_ou_art1(bloco: str, corpo: str) -> tuple[Optional[str], Optional[str]]:
+    """Extrai o resumo/ementa do ato e o texto limpo dos artigos para consulta detalhada."""
+    # Texto original a partir do cabeçalho sem ruído excessivo
+    linhas = [re.sub(r"\s+", " ", ln).strip() for ln in bloco.strip().splitlines() if ln.strip()]
+    texto_limpo = "\n".join(linhas[:25])
+
+    # Ementa: geralmente fica entre a data do topo e "O PREFEITO / A SUPERINTENDENTE / A SECRETÁRIA"
+    m_ementa = re.search(
+        rf"^\s*(?:DECRETO|PORTARIA)[^\n]*\n\s*(?:DE\s+)?\d{{1,2}}\s*DE\s*{_MESES}\s*DE\s*\d{{4}}\s*\n(.+?)(?=\n\s*(?:O\s+PREFEITO|A\s+SUPERINTENDENTE|A\s+SECRET[ÁA]RIA|O\s+SECRET[ÁA]RIO|O\s+MUNIC[ÍI]PIO|A\s+MESA))",
+        bloco,
+        re.IGNORECASE | re.DOTALL,
+    )
+    ementa = None
+    if m_ementa:
+        cand = re.sub(r"\s+", " ", m_ementa.group(1)).strip(" .;-")
+        cand = re.sub(r"^REPUBLICADO\s+POR\s+INCORRE[ÇC][ÃA]O\s*", "", cand, flags=re.IGNORECASE).strip()
+        if 10 <= len(cand) <= 300:
+            ementa = cand
+
+    # Se não tiver ementa no topo (comum em algumas portarias), usa o Art. 1º resumido
+    if not ementa:
+        m_art1 = re.search(r"(Art\.?\s*1[ºo°]?\s*.+?)(?=\s*Art\.?\s*2|\s*São\s+Crist[óo]v[ãa]o|\s*Munic[íi]pio\s+de|$)", corpo, re.IGNORECASE | re.DOTALL)
+        if m_art1:
+            ementa = re.sub(r"\s+", " ", m_art1.group(1)).strip()
+
+    return ementa, texto_limpo
 
 
 def _extrair_cargo_e_orgao_comissionado(bloco: str) -> tuple[Optional[str], Optional[str]]:
@@ -177,8 +237,9 @@ def _extrair_cargo_e_orgao_secretario(bloco: str) -> tuple[Optional[str], Option
 
 
 def _extrair_atos_conselho(bloco: str, doc_id: str, data: Optional[str]) -> list[Ato]:
-    """Extrai exonerações e nomeações de membros de conselhos (ex.: Decreto 659/2026)."""
+    """Extrai exonerações e nomeações de membros de conselhos (ex.: Decreto 659/2026 e 689/2026)."""
     atos = []
+    detalhes_ato, texto_orig = _extrair_ementa_ou_art1(bloco, bloco)
     artigos = re.split(r"(?=\bArt\.?\s*\d+[ºo°]?)", bloco)
     for art in artigos:
         if re.search(r"\bexonerad[oa]\b", art, re.IGNORECASE):
@@ -189,7 +250,7 @@ def _extrair_atos_conselho(bloco: str, doc_id: str, data: Optional[str]) -> list
             continue
 
         m_nome = re.search(
-            r"(?:Titular|Suplente|Membro|Conselheir[oa])\s*:\s*([A-ZÀ-Úa-zà-ú][^\n,]+?)(?:\s+CPF|\n|$)",
+            r"(?:Titular|Suplente|Membro|Conselheir[oa])\s*:\s*([A-ZÀ-Úa-zà-ú][^\n,]+?)(?:\s*,?\s*CPF|\n|$)",
             art,
             re.IGNORECASE,
         )
@@ -200,18 +261,18 @@ def _extrair_atos_conselho(bloco: str, doc_id: str, data: Optional[str]) -> list
             continue
 
         m_cargo = re.search(
-            r"(Conselheir[oa]\s+[^\n.]+?)(?:\.|Secretaria|$)",
+            r"(Conselheir[oa]\s+[^\n.,:]+?)(?=\s*,\s*representante|\.|Secretaria|Funda[çc][ãa]o|:|$)",
             art,
             re.IGNORECASE | re.DOTALL,
         )
         cargo = _limpar_cargo(m_cargo.group(1)) if m_cargo else "Conselheiro(a)"
 
         m_orgao = re.search(
-            r"((?:Secretaria|Funda[çc][ãa]o|Procuradoria|Gabinete)\s+[^\n:]+?)(?:\s*-\s*[A-Z]+\s*)?\n\s*(?:Titular|Suplente|Membro)",
+            r"(?:representantes?\s+(?:da|do)\s+)?((?:Secretaria|Funda[çc][ãa]o|Procuradoria|Gabinete)\s+[^\n:]+?)(?:\s*-\s*[A-Z]+\s*)?(?::|\n)\s*(?:Titular|Suplente|Membro)",
             art,
-            re.IGNORECASE,
+            re.IGNORECASE | re.DOTALL,
         )
-        orgao = _limpar_orgao(m_orgao.group(1)) if m_orgao else None
+        orgao = _limpar_orgao(m_orgao.group(1)) if m_orgao else _extrair_orgao_assinatura(bloco)
 
         atos.append(
             Ato(
@@ -221,6 +282,8 @@ def _extrair_atos_conselho(bloco: str, doc_id: str, data: Optional[str]) -> list
                 cargo=cargo,
                 orgao=orgao,
                 data=data,
+                detalhes=detalhes_ato,
+                texto_original=texto_orig,
             )
         )
     return atos
@@ -323,6 +386,9 @@ def _extrair_ato_bloco(doc_tipo: str, doc_num: str, bloco_bruto: str) -> list[At
         else:
             subtipo_rotulo = "Redução de Carga Horária"
         tipo = "outro"
+    elif re.search(r"\bVAC[ÂA]NCIA\b", corpo, re.IGNORECASE):
+        tipo = "outro"
+        subtipo_rotulo = "Vacância"
 
     multiplos = _extrair_multiplos_art1(corpo, doc_id, tipo, subtipo_rotulo, data, bloco)
     if multiplos:
@@ -430,6 +496,18 @@ def _extrair_dados_servidor(
             nome = _limpar_nome(m.group(1))
             cargo, orgao = _extrair_cargo_e_orgao_comissionado(corpo)
 
+    # 6b. Padrão VACÂNCIA: "Art. 1º Declarar VACÂNCIA do cargo de CARGO, ocupado pela servidora NOME, inscrita no CPF..."
+    elif subtipo_rotulo == "Vacância":
+        m = re.search(
+            r"VAC[ÂA]NCIA\s+do\s+cargo(?:\s+efetivo)?\s+de\s+([^,]+?)\s*,\s*ocupad[oa]\s+pel[oa]\s+servidor(?:a)?\s+([A-ZÀ-Ú][^,]+?)\s*,\s*(?:inscrit|CPF)",
+            corpo,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if m:
+            cargo = _limpar_cargo(m.group(1))
+            nome = _limpar_nome(m.group(2))
+            orgao = _extrair_orgao_assinatura(bloco)
+
     # 7. Padrão LICENÇA PRÊMIO / MUDANÇA DE NÍVEL / GRATIFICAÇÃO / REDUÇÃO DE CARGA HORÁRIA
     elif subtipo_rotulo in (
         "Licença Prêmio",
@@ -440,7 +518,7 @@ def _extrair_dados_servidor(
         "Suspensão de Redução de Carga Horária",
     ):
         m_nome = re.search(
-            r"(?:LICEN[ÇC]A\s+PR[ÊE]MIO\s+a|Gratifica[çc][ãa]o\s+por\s+Tempo\s+Integral\s+a|carga\s+hor[áa]ria\s+de|ao\s+servidor|a\s+servidora|à\s+servidora)\s+([A-ZÀ-Ú][A-ZÀ-Ú\s]+?)(?=\s*,\s*(?:servidor|ocupante|cargo|Professor|inscrit|CPF)|\s+servidor(?:a)?\s+(?:de\s+cargo\s+)?efetivo)",
+            r"(?:LICEN[ÇC]A\s+PR[ÊE]MIO\s+a|Gratifica[çc][ãa]o\s+por\s+Tempo\s+Integral\s+a|carga\s+hor[áa]ria\s+de|(?:ao|a|à)\s+servidor(?:a)?(?:\s+efetiv[oa])?)\s+([A-ZÀ-Ú][A-ZÀ-Ú\s]+?)(?=\s*,\s*(?:servidor|ocupante|cargo|Professor|inscrit|CPF)|\s+servidor(?:a)?\s+(?:de\s+cargo\s+)?efetiv[oa])",
             corpo,
             re.DOTALL,
         )
@@ -449,7 +527,7 @@ def _extrair_dados_servidor(
 
         # Tenta extrair cargo efetivo nas várias ordens possíveis
         for padrao_cargo in (
-            r"matr[íi]cula\s+n[ºo°.]*\s*\d+\s*,?\s*([A-ZÀ-Úa-zà-ú][^,]+?)(?=\s*,?\s*do\s+Munic[íi]pio|\s*,\s*lotad)",
+            r"matr[íi]cula\s+n[ºo°.]*\s*\d+\s*,?\s*([A-ZÀ-Úa-zà-ú][^,]+?)(?=\s*,?\s*do\s+Munic[íi]pio|\s*,\s*lotad|\s*,\s*a\s+pedido)",
             r"ocupante\s+d[eo]\s+cargo\s*(?:efetivo)?(?:\s+de)?\s*,?\s*([A-ZÀ-Úa-zà-ú][^,]+?)(?=\s*,\s*(?:inscrit|CPF|lotad))",
             r"cargo\s+(?!efetivo\b)([A-ZÀ-Úa-zà-ú][^,]+?)(?=\s*,\s*CPF)",
             r",\s*(Professor(?:\(a\))?\s+[^,]+?)(?=\s*,\s*CPF)",
@@ -468,10 +546,10 @@ def _extrair_dados_servidor(
         )
         if m_orgao:
             orgao = _limpar_orgao(m_orgao.group(1))
-        elif re.search(r"SECRET[ÁA]RI[OA]\s+MUNICIPAL\s+DE\s+EDUCA[ÇC][ÃA]O", bloco, re.IGNORECASE):
-            orgao = "Secretaria Municipal de Educação"
+        else:
+            orgao = _extrair_orgao_assinatura(bloco)
 
-    # 8. Padrão geral de NOMEAÇÃO / EXONERAÇÃO (Comissionados, Secretários e Efetivos de Concurso)
+    # 8. Padrão geral de NOMEAÇÃO / EXONERAÇÃO (Comissionados, Secretários e Efetivos)
     if not nome:
         # Caso 8a: Nomeação de cargo efetivo ("Art. 1º Fica nomeado para exercer as funções do cargo efetivo de CARGO ..., Sr.º NOME, CPF...")
         m_efetivo = re.search(
@@ -483,9 +561,9 @@ def _extrair_dados_servidor(
             cargo = _limpar_cargo(m_efetivo.group(1))
             nome = _limpar_nome(m_efetivo.group(2))
         else:
-            # Caso 8b: Padrão "Art. 1º NOME, CPF..."
+            # Caso 8b: Padrão "Art. 1º NOME, CPF..." ou "Art. 1º NOME servidora de cargo efetivo, inscrita no CPF..."
             m_padrao = re.search(
-                r"Art\.?\s*1[ºo°]?\s+([A-ZÀ-Ú][^,]+?)\s*,\s*(?:CPF|portador|inscrit|do\s+Cargo|das\s+fun[çc][õo]es|para\s+exercer)",
+                r"Art\.?\s*1[ºo°]?\s+([A-ZÀ-Ú][^,]+?)\s*(?:,\s*)?(?:servidor(?:a)?\s+de\s+cargo\s+efetivo|CPF|portador|inscrit|do\s+Cargo|das\s+fun[çc][õo]es|para\s+exercer)",
                 corpo,
                 re.DOTALL,
             )
@@ -498,12 +576,29 @@ def _extrair_dados_servidor(
             cargo, orgao_sec = _extrair_cargo_e_orgao_secretario(bloco)
             if not orgao:
                 orgao = orgao_sec
+        if not cargo:
+            # Exoneração de servidor efetivo em Portaria ("matrícula nº 0003985, Auxiliar de Saúde Bucal do Município...")
+            m_cargo_ef = re.search(
+                r"matr[íi]cula\s+n[ºo°.]*\s*\d+\s*,?\s*([A-ZÀ-Úa-zà-ú][^,]+?)(?=\s*,?\s*do\s+Munic[íi]pio|\s*,\s*lotad|\s*,\s*a\s+pedido)",
+                corpo,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if m_cargo_ef:
+                cargo = _limpar_cargo(m_cargo_ef.group(1))
 
-    # Se for "outro" e tiver um subtipo identificado, prefixa no cargo para ficar claro na tabela/cards
-    if tipo == "outro" and subtipo_rotulo:
-        if cargo and not cargo.lower().startswith(subtipo_rotulo.lower()):
-            cargo = f"{subtipo_rotulo} — {cargo}"
-        elif not cargo:
+    if not orgao and doc_tipo_eh_portaria(doc_id):
+        orgao = _extrair_orgao_assinatura(bloco)
+
+    # Em atos do tipo "outro", não poluímos o cargo com o nome do ato se houver subtipo:
+    # deixamos o cargo limpo (ou subtipo quando não há cargo específico) e colocamos o subtipo/ementa nos detalhes!
+    detalhes_ato, texto_orig = _extrair_ementa_ou_art1(bloco, corpo)
+    if subtipo_rotulo:
+        if detalles := detalhes_ato:
+            if not detalles.lower().startswith(subtipo_rotulo.lower()):
+                detalhes_ato = f"{subtipo_rotulo}: {detalles}"
+        else:
+            detalhes_ato = subtipo_rotulo
+        if not cargo:
             cargo = subtipo_rotulo
 
     if not nome:
@@ -517,8 +612,14 @@ def _extrair_dados_servidor(
             cargo=cargo,
             orgao=orgao,
             data=data,
+            detalhes=detalhes_ato,
+            texto_original=texto_orig,
         )
     ]
+
+
+def doc_tipo_eh_portaria(doc_id: str) -> bool:
+    return str(doc_id).lower().startswith("portaria")
 
 
 def extrair_atos(texto: str) -> list[Ato]:
