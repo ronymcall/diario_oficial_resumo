@@ -5,4 +5,6 @@ beautifulsoup4
 schedule
 streamlit
 pandas
-python-dotenv   
+python-dotenv
+psycopg2-binary
+

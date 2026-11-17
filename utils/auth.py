@@ -5,7 +5,8 @@ import secrets
 import sqlite3
 from datetime import datetime, timedelta
 
-from config import DB_PATH, get_config
+from config import get_config
+from utils.db import _eh_postgres, abrir_conexao
 
 _ITERACOES = 260_000
 _DIAS_SESSAO_PADRAO = 30
@@ -39,8 +40,35 @@ def _verificar_senha(senha: str, hash_salvo: str) -> bool:
         return False
 
 
-def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH))
+def _get_conn():
+    conn = abrir_conexao()
+    if _eh_postgres(conn):
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS usuarios (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                nome TEXT NOT NULL,
+                senha_hash TEXT NOT NULL,
+                papel TEXT NOT NULL DEFAULT 'usuario',
+                ativo INTEGER NOT NULL DEFAULT 1,
+                criado_em TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sessoes (
+                token_hash TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+                expira_em TEXT NOT NULL,
+                criado_em TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+        return conn
+
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS usuarios (
@@ -269,7 +297,7 @@ def criar_usuario(
             ),
         )
         conn.commit()
-    except sqlite3.IntegrityError:
+    except Exception:
         conn.close()
         return False, f"O usuário '{u}' já está cadastrado."
     conn.close()

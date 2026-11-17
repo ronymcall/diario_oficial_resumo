@@ -1,12 +1,90 @@
 import sqlite3
+from typing import Any
 
-from config import DB_PATH
+from config import DB_PATH, get_config
 from processor.extractor import Ato
 
 
-def _get_conn() -> sqlite3.Connection:
+class _PgCursorWrapper:
+    def __init__(self, cur: Any):
+        self._cur = cur
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+
+class _PgConnWrapper:
+    """Adaptador que permite usar a mesma sintaxe do sqlite3 no PostgreSQL (Supabase)."""
+
+    is_postgres = True
+
+    def __init__(self, dsn: str):
+        import psycopg2
+
+        self._conn = psycopg2.connect(dsn)
+
+    def execute(self, sql: str, params: tuple | list = ()) -> _PgCursorWrapper:
+        sql_pg = sql.replace("?", "%s").replace("IFNULL(", "COALESCE(")
+        cur = self._conn.cursor()
+        cur.execute(sql_pg, tuple(params))
+        return _PgCursorWrapper(cur)
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+def abrir_conexao():
+    """Abre conexão com o Supabase (PostgreSQL) se DATABASE_URL estiver definida, ou SQLite local."""
+    db_url = get_config("DATABASE_URL").strip()
+    if db_url:
+        return _PgConnWrapper(db_url)
     conn = sqlite3.connect(str(DB_PATH))
-    conn.execute("""
+    return conn
+
+
+def _eh_postgres(conn: Any) -> bool:
+    return getattr(conn, "is_postgres", False)
+
+
+def _get_conn():
+    conn = abrir_conexao()
+    if _eh_postgres(conn):
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS atos (
+                id SERIAL PRIMARY KEY,
+                decreto TEXT,
+                tipo TEXT,
+                nome TEXT,
+                cargo TEXT,
+                orgao TEXT,
+                data TEXT,
+                detalhes TEXT,
+                texto_original TEXT,
+                edicao TEXT
+            )
+            """
+        )
+        conn.execute(
+            "ALTER TABLE atos ADD COLUMN IF NOT EXISTS orgao TEXT"
+        )
+        conn.execute(
+            "ALTER TABLE atos ADD COLUMN IF NOT EXISTS detalhes TEXT"
+        )
+        conn.execute(
+            "ALTER TABLE atos ADD COLUMN IF NOT EXISTS texto_original TEXT"
+        )
+        conn.commit()
+        return conn
+
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS atos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             decreto TEXT,
@@ -17,7 +95,8 @@ def _get_conn() -> sqlite3.Connection:
             data TEXT,
             edicao TEXT
         )
-    """)
+        """
+    )
     colunas = {row[1] for row in conn.execute("PRAGMA table_info(atos)")}
     if "orgao" not in colunas:
         conn.execute("ALTER TABLE atos ADD COLUMN orgao TEXT")
@@ -36,20 +115,23 @@ def _get_conn() -> sqlite3.Connection:
             indices.discard("idx_atos_unico")
 
     if "idx_atos_unico" not in indices:
-        # Mantém a extração mais recente e remove duplicatas antigas.
-        conn.execute("""
+        conn.execute(
+            """
             DELETE FROM atos
             WHERE id NOT IN (
                 SELECT MAX(id)
                 FROM atos
                 GROUP BY IFNULL(edicao, ''), decreto, nome
             )
-        """)
-        conn.execute("""
+            """
+        )
+        conn.execute(
+            """
             CREATE UNIQUE INDEX idx_atos_unico ON atos (
                 IFNULL(edicao, ''), decreto, nome
             )
-        """)
+            """
+        )
 
     conn.commit()
     return conn
@@ -68,7 +150,7 @@ def salvar_atos(atos: list[Ato], edicao: str = "") -> None:
     for a in atos:
         conn.execute(
             """
-            INSERT OR REPLACE INTO atos
+            INSERT INTO atos
                 (decreto, tipo, nome, cargo, orgao, data, detalhes, texto_original, edicao)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
