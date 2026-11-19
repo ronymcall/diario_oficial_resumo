@@ -265,3 +265,37 @@ def carregar_atos_edicao(edicao: str) -> list[Ato]:
         )
         for r in reversed(registros)
     ]
+
+
+def resumo_edicoes_recentes(limite: int = 12) -> list[dict]:
+    """Retorna o resumo quantitativo das últimas edições (da mais antiga para a mais recente)."""
+    conn = _get_conn()
+    rows = conn.execute(
+        """
+        SELECT
+            edicao,
+            COUNT(*) AS total,
+            SUM(CASE WHEN tipo = 'nomeação' THEN 1 ELSE 0 END) AS nomeacoes,
+            SUM(CASE WHEN tipo = 'exoneração' THEN 1 ELSE 0 END) AS exoneracoes,
+            SUM(CASE WHEN tipo = 'outro' THEN 1 ELSE 0 END) AS outros,
+            COUNT(DISTINCT CASE WHEN orgao IS NOT NULL AND TRIM(orgao) != '' THEN orgao END) AS orgaos
+        FROM atos
+        WHERE edicao IS NOT NULL AND TRIM(edicao) != ''
+        GROUP BY edicao
+        ORDER BY MAX(id) DESC
+        LIMIT ?
+        """,
+        (limite,),
+    ).fetchall()
+    conn.close()
+    return [
+        {
+            "edicao": r[0],
+            "total": int(r[1] or 0),
+            "nomeacoes": int(r[2] or 0),
+            "exoneracoes": int(r[3] or 0),
+            "outros": int(r[4] or 0),
+            "orgaos": int(r[5] or 0),
+        }
+        for r in reversed(rows)
+    ]
